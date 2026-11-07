@@ -12,7 +12,8 @@
 | 运行 | 结果 | 耗时 |
 |---|---|---|
 | [内核 run 42371543172](https://github.com/yinghuo0721/linux-xiaomi-thyme-mainline/actions/runs/42371543172) | success | 约 30 分钟 |
-| [rootfs run 42383955344](https://github.com/yinghuo0721/linux-xiaomi-thyme-mainline/actions/runs/42383955344) | success | 约 3 分钟 |
+| [rootfs minimal run 42385798649](https://github.com/yinghuo0721/linux-xiaomi-thyme-mainline/actions/runs/42385798649) | success | 约 3 分钟 |
+| [rootfs desktop run 42386635701](https://github.com/yinghuo0721/linux-xiaomi-thyme-mainline/actions/runs/42386635701) | success | 约 3 分钟 |
 
 ## 内核流水线
 
@@ -30,6 +31,7 @@ gh workflow run build-thyme.yml --repo <owner>/<repo> --ref master \
 | `thyme-camera-menu.img` | 正常启动镜像，cmdline 含 `root=/dev/sda38` |
 | `thyme-camera-logdump.img` | 日志诊断镜像，无 `root=` |
 | `thyme-camera-display-test.img` | 显示/initcall 诊断镜像 |
+| `thyme-userdata.img` | 单系统镜像：cmdline `root=PARTLABEL=userdata rw rootwait` |
 | `raw/Image`、`raw/Image.gz` | 未打包内核 |
 | `raw/kernel.config` | 实际参与编译的配置 |
 | `dts/*.dtb` | 主设备树与 logdump 设备树 |
@@ -90,26 +92,66 @@ gh workflow run build-rootfs.yml --repo <owner>/<repo> --ref master \
 | `user_password` | `thyme` 用户密码，默认 `thyme`，请改 |
 | `ssh_public_key` | 可选，写入 `authorized_keys` |
 | `wifi_ssid` / `wifi_psk` | 可选，生成 NetworkManager 连接 |
-| `root_part` | 根分区设备，默认 `/dev/sda38`，会写入 `/etc/fstab` |
+| `root_part` | 根分区：`/dev/sda38`，或单系统刷 userdata 时用 `PARTLABEL=userdata` |
+| `image_format` | `tar`（默认）、`ext4`（fastboot 刷 userdata）或 `both` |
 | `firmware_url` / `firmware_sha256` | 可选，注入原厂固件（见下） |
 
 选择 `resolute` 是因为当前 Ubuntu 26.04 的 libcamera 正好是 0.7.0，与 CI 编译的
 patched libcamera 的 `libcamera.so.0.7` ABI 一致；chroot 脚本检测到 ABI 匹配时会
 自动启用 PipeWire/WirePlumber 的 `LD_LIBRARY_PATH` drop-in。
 
-产物 `thyme-rootfs-<suite>[-desktop]`（约 940 MB tar.zst，保留 30 天）：
+产物 `thyme-rootfs-<suite>[-desktop]`（minimal 约 940 MB，desktop 约 1.2 GB
+tar.zst，保留 30 天）：
 
 ```sh
 sudo mkfs.ext4 /dev/sda38
 sudo mount /dev/sda38 /mnt
-sudo tar --zstd --numeric-owner -xpf thyme-rootfs-resolute-<date>.tar.zst -C /mnt
+sudo tar --zstd --numeric-owner -xpf thyme-rootfs-resolute-desktop-<date>.tar.zst -C /mnt
 sudo umount /mnt
 ```
+
+### 手机上还没有 Linux：单系统刷入 `userdata`
+
+用 `image_format=ext4` 构建，拿到 `thyme-rootfs-<suite>[-desktop]-<date>.img.zst`，
+配合内核产物里的 `thyme-userdata.img`（cmdline 为
+`root=PARTLABEL=userdata rw rootwait`）：
+
+```bat
+:: 1. 解开 ext4 镜像（Windows 可用 7-Zip，或 Linux 上 zstd -d）
+7z e thyme-rootfs-resolute-desktop-<date>.img.zst
+
+:: 2. 两个 boot slot 都刷同一份内核镜像
+fastboot flash boot_a thyme-userdata.img
+fastboot flash boot_b thyme-userdata.img
+
+:: 3. 擦除并刷入 userdata（会清空 Android 数据！）
+fastboot erase userdata
+fastboot flash userdata thyme-rootfs-resolute-desktop-<date>.img
+
+fastboot reboot
+```
+
+首次启动会把 ext4 自动扩到 `userdata` 分区大小（fstab 的
+`x-systemd.growfs`），需要几分钟。rootfs 与 boot 镜像必须来自同一次内核构建；
+ABL 保持原厂，不要刷第三方 ABL。回滚用原厂 `images/boot.img` 刷回
+`boot_a`/`boot_b`。
 
 镜像内已包含：systemd、NetworkManager/wpa_supplicant、OpenSSH、BlueZ、
 PipeWire/WirePlumber、Mesa/freedreno、`alsa-ucm-conf`、`v4l-utils`/`i2c-tools`、
 patched libcamera（`/opt/thyme-camera-focus-color`）、相机/GL 用户配置、串口
 `ttyMSM0` getty 和首次启动生成 SSH host key 的 unit。
+
+`desktop=true` 时额外安装 `ubuntu-desktop-minimal`（GNOME 50）和
+`gnome-tweaks`，并做了三项手机化设置：
+
+- GDM 自动登录 `thyme` 用户（`/etc/gdm3/custom.conf`），避免无键盘时卡在登录界面；
+- 创建 `~/.config/gnome-initial-setup-done` 并 mask 首次登录向导；
+- 安装 `90-thyme-native-gl.conf` 到
+  `~/.config/systemd/user/org.gnome.Shell@ubuntu.service.d/`，让 GNOME Shell 使用
+  freedreno 原生驱动，避开 Zink/Turnip 崩溃。
+
+GNOME 首次进入后建议在“设置 → 显示”里调整缩放，触屏键盘与旋转需要按实际
+桌面环境再调。
 
 本地构建（arm64 Linux，或带 qemu binfmt 的 x86 主机）：
 
