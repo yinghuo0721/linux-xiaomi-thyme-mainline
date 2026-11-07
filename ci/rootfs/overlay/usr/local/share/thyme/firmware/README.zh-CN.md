@@ -37,12 +37,20 @@ ADSP 音频、Venus 视频编解码和传感器低功耗岛会不可用。
 
 ## linux-firmware 已覆盖的部分
 
+Ubuntu 26.04 的 `linux-firmware` 以 `.zst` 压缩形式安装（例如
+`ath11k/QCA6390/hw2.0/amss.bin.zst`）；内核配置已启用
+`CONFIG_FW_LOADER_COMPRESS_ZSTD`，可以直接加载，不需要手动解压。
+
 ```text
-ath11k/QCA6390/hw2.0/{amss.bin,m3.bin,board-2.bin}   # Wi-Fi / 蓝牙
-qcom/a650_sqe.fw                                      # Adreno 650
-qcom/a650_gmu.bin                                     # Adreno 650 GMU
-qcom/venus-5.2/...                                    # 若使用上游 venus 路径
+ath11k/QCA6390/hw2.0/{amss.bin,m3.bin,board-2.bin}.zst  # Wi-Fi / 蓝牙
+qcom/a650_sqe.fw.zst                                     # Adreno 650
+qcom/a650_gmu.bin.zst                                    # Adreno 650 GMU
+qcom/sm8250/a650_zap.mbn.zst                             # 通用 zap（本机用 umi 版本）
+qcom/venus-5.2/...                                       # 若使用上游 venus 路径
 ```
+
+`/lib/firmware` 在 usrmerge 系统上是 `/usr/lib/firmware` 的符号链接，两条路径
+等价。原厂 blobs 请安装为未压缩的 `.mbn`/`.bNN` 文件。
 
 QCA6390 的板级校准数据（BDF）若与通用 `board-2.bin` 不匹配，Wi-Fi 仍可能
 无法启动；此时需要从原厂 `vendor`/`persist` 分区补齐对应板级的 BDF。

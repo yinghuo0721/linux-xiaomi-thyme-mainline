@@ -6,8 +6,8 @@ set -u
 missing=0
 
 check() {
-    if [ ! -e "/lib/firmware/$1" ]; then
-        echo "MISSING /lib/firmware/$1"
+    if [ ! -e "/lib/firmware/$1" ] && [ ! -e "/lib/firmware/$1.zst" ]; then
+        echo "MISSING /lib/firmware/$1 (or .zst)"
         missing=1
     fi
 }
@@ -24,6 +24,7 @@ check ath11k/QCA6390/hw2.0/amss.bin
 check ath11k/QCA6390/hw2.0/m3.bin
 check ath11k/QCA6390/hw2.0/board-2.bin
 check qcom/a650_sqe.fw
+check qcom/a650_gmu.bin
 
 if [ "$missing" -eq 0 ]; then
     echo "All listed firmware files are present."
