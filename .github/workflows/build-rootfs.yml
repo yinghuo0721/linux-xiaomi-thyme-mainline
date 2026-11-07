@@ -1,0 +1,164 @@
+name: Build thyme rootfs
+
+# Manual only: the resulting image contains the password supplied at dispatch
+# time, so do not build it automatically on every push.
+on:
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: "Ubuntu suite (resolute = 26.04 LTS)"
+        type: choice
+        options: [resolute, noble]
+        default: resolute
+      desktop:
+        description: "安装 GNOME 桌面 (ubuntu-desktop-minimal)"
+        type: boolean
+        default: false
+      hostname:
+        description: "主机名"
+        type: string
+        default: thyme
+      user_password:
+        description: "thyme 用户密码（默认值仅用于首次登录，请尽快修改）"
+        type: string
+        default: thyme
+      ssh_public_key:
+        description: "SSH 公钥（可空）"
+        type: string
+        default: ""
+      wifi_ssid:
+        description: "Wi-Fi SSID（可空）"
+        type: string
+        default: ""
+      wifi_psk:
+        description: "Wi-Fi 密码（可空）"
+        type: string
+        default: ""
+      root_part:
+        description: "根分区设备（必须与 boot 镜像 cmdline 的 root= 一致）"
+        type: string
+        default: /dev/sda38
+      firmware_url:
+        description: "可选: 含 lib/firmware 的 tar.zst/tar.gz/zip 直链（原厂 blobs，勿放公开链接）"
+        type: string
+        default: ""
+      firmware_sha256:
+        description: "可选: firmware_url 的 SHA256"
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: thyme-rootfs-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  rootfs:
+    name: Rootfs (${{ inputs.suite }}, desktop=${{ inputs.desktop }})
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 150
+    env:
+      SUITE: ${{ inputs.suite }}
+      DESKTOP: ${{ inputs.desktop && 'true' || 'false' }}
+      THYME_HOSTNAME: ${{ inputs.hostname }}
+      THYME_USER: thyme
+      THYME_PASSWORD: ${{ inputs.user_password }}
+      SSH_PUBKEY: ${{ inputs.ssh_public_key }}
+      WIFI_SSID: ${{ inputs.wifi_ssid }}
+      WIFI_PSK: ${{ inputs.wifi_psk }}
+      ROOT_PART: ${{ inputs.root_part }}
+      FIRMWARE_URL: ${{ inputs.firmware_url }}
+      FIRMWARE_SHA256: ${{ inputs.firmware_sha256 }}
+      LIBCAMERA_STAGE: ${{ github.workspace }}/libcamera-stage
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install host dependencies
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            mmdebstrap zstd e2fsprogs unzip \
+            build-essential meson ninja-build pkg-config \
+            libudev-dev libyaml-dev libssl-dev libevent-dev libdrm-dev \
+            python3-jinja2 python3-ply python3-yaml
+
+      - name: Build libcamera v0.7.0
+        run: |
+          meson setup build/libcamera thyme-camera/userspace/thyme-libcamera-v070 \
+            --prefix=/opt/thyme-camera-focus-color --libdir=lib \
+            --buildtype=debugoptimized \
+            -Dpipelines=simple -Dipas=simple -Dcam=disabled -Dqcam=disabled \
+            -Dgstreamer=disabled -Dpycamera=disabled -Ddocumentation=disabled \
+            -Dlc-compliance=disabled -Dv4l2=disabled -Dtest=false \
+            -Dtracing=disabled -Dlibunwind=disabled
+          ninja -C build/libcamera -j"$(nproc)"
+          DESTDIR="$GITHUB_WORKSPACE/libcamera-stage" \
+            meson install -C build/libcamera --no-rebuild
+
+      - name: Prepare optional vendor firmware
+        run: |
+          if [ -z "$FIRMWARE_URL" ]; then
+            echo "No firmware_url supplied; the rootfs will only contain linux-firmware."
+            exit 0
+          fi
+          curl -fL --retry 3 --connect-timeout 30 \
+            -o "$RUNNER_TEMP/firmware.bin" "$FIRMWARE_URL"
+          if [ -n "$FIRMWARE_SHA256" ]; then
+            echo "$FIRMWARE_SHA256  $RUNNER_TEMP/firmware.bin" | sha256sum -c -
+          fi
+          mkdir -p "$RUNNER_TEMP/fw-extract"
+          case "$FIRMWARE_URL" in
+            *.zip) unzip -q "$RUNNER_TEMP/firmware.bin" -d "$RUNNER_TEMP/fw-extract" ;;
+            *.tar.gz|*.tgz) tar -xzf "$RUNNER_TEMP/firmware.bin" -C "$RUNNER_TEMP/fw-extract" ;;
+            *) tar --zstd -xf "$RUNNER_TEMP/firmware.bin" -C "$RUNNER_TEMP/fw-extract" ;;
+          esac
+          fw="$(find "$RUNNER_TEMP/fw-extract" -type d -path '*/lib/firmware' | head -1)"
+          if [ -n "$fw" ]; then
+            dir="$(dirname "$fw")"
+          else
+            fwd="$(find "$RUNNER_TEMP/fw-extract" -type d -name firmware | head -1)"
+            if [ -z "$fwd" ]; then
+              echo "::error::archive has neither lib/firmware nor firmware/"
+              exit 1
+            fi
+            mkdir -p "$RUNNER_TEMP/fw-normalized/lib"
+            cp -a "$fwd" "$RUNNER_TEMP/fw-normalized/lib/firmware"
+            dir="$RUNNER_TEMP/fw-normalized"
+          fi
+          echo "VENDOR_FIRMWARE_DIR=$dir" >> "$GITHUB_ENV"
+          find "$dir/lib/firmware" -type f | wc -l
+
+      - name: Build rootfs
+        run: bash ci/build-rootfs.sh
+
+      - name: Summary
+        run: |
+          cat out-rootfs/*.info.txt >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo ""
+            echo "### 产物"
+            echo '```'
+            ls -lh out-rootfs/
+            echo '```'
+            echo ""
+            echo "> 默认密码仅用于首次登录，请通过 SSH/控制台登录后立即修改。"
+            if [ -n "${VENDOR_FIRMWARE_DIR:-}" ]; then
+              echo "> 已注入 firmware_url 提供的原厂固件。"
+            else
+              echo "> 未注入原厂固件：下载后可在 Linux 上执行"
+              echo "> \`ci/rootfs/inject-firmware.sh <rootfs.tar.zst> <stock-firmware/out>\`。"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload rootfs artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: thyme-rootfs-${{ inputs.suite }}-${{ inputs.desktop && 'desktop' || 'minimal' }}
+          path: out-rootfs/
+          if-no-files-found: error
+          retention-days: 30

@@ -1,0 +1,14 @@
+[Unit]
+Description=thyme first boot setup
+ConditionPathExists=!/var/lib/thyme-firstboot-done
+Before=ssh.service
+After=local-fs.target
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/thyme-firstboot
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

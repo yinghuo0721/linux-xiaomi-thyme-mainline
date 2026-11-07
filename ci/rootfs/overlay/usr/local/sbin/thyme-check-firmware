@@ -1,0 +1,35 @@
+#!/bin/sh
+# Check the firmware files referenced by the thyme device tree and mainline
+# drivers. Vendor blobs are not shipped in the rootfs image.
+set -u
+
+missing=0
+
+check() {
+    if [ ! -e "/lib/firmware/$1" ]; then
+        echo "MISSING /lib/firmware/$1"
+        missing=1
+    fi
+}
+
+# Referenced by arch/arm64/boot/dts/qcom/sm8250-xiaomi-thyme.dts.
+check qcom/sm8250/umi/adsp.mbn
+check qcom/sm8250/umi/cdsp.mbn
+check qcom/sm8250/umi/venus.mbn
+check qcom/sm8250/umi/a650_zap.mbn
+check qcom/sm8250/umi/slpi.mbn
+
+# Provided by linux-firmware, listed for completeness.
+check ath11k/QCA6390/hw2.0/amss.bin
+check ath11k/QCA6390/hw2.0/m3.bin
+check ath11k/QCA6390/hw2.0/board-2.bin
+check qcom/a650_sqe.fw
+
+if [ "$missing" -eq 0 ]; then
+    echo "All listed firmware files are present."
+else
+    echo "Copy the vendor blobs listed above; see"
+    echo "/usr/local/share/thyme/firmware/README.zh-CN.md"
+fi
+
+exit "$missing"
