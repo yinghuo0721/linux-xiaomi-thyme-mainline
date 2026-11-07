@@ -15,6 +15,14 @@ SSH_PUBKEY="${SSH_PUBKEY:-}"
 WIFI_SSID="${WIFI_SSID:-}"
 WIFI_PSK="${WIFI_PSK:-}"
 ROOT_PART="${ROOT_PART:-/dev/sda38}"
+case "$ROOT_PART" in
+    /dev/*) ;;
+    *)
+        echo "ERROR: ROOT_PART must look like /dev/sdXN (got '$ROOT_PART')." >&2
+        echo "On Windows/Git Bash pass -f root_part='//dev/sda38' or set MSYS_NO_PATHCONV=1." >&2
+        exit 1
+        ;;
+esac
 THYME_DESKTOP="${THYME_DESKTOP:-false}"
 LIBCAMERA_STAGE="${LIBCAMERA_STAGE:-}"
 VENDOR_FIRMWARE_DIR="${VENDOR_FIRMWARE_DIR:-}"
