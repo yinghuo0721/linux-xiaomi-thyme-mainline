@@ -302,14 +302,15 @@ echo "==> verification report"
         "$OUT/manifest.txt" || true
     echo
     echo "== user configs =="
-    find "$ROOTFS/home/$THYME_USER/.config" -maxdepth 4 \( -type f -o -type l \) \
-        2>/dev/null | sed "s|$ROOTFS||" | sort
+    sudo find "$ROOTFS/home/$THYME_USER/.config" -maxdepth 4 \
+        \( -type f -o -type l \) -printf '%p\n' 2>/dev/null \
+        | sed "s|$ROOTFS||" | sort || true
     echo
     echo "== libcamera =="
     ls -l "$ROOTFS/opt/thyme-camera-focus-color/lib/libcamera.so.0.7.0" 2>/dev/null || true
     echo
     echo "== firmware check =="
-    chroot "$ROOTFS" /usr/local/sbin/thyme-check-firmware 2>&1 || true
+    sudo chroot "$ROOTFS" /usr/local/sbin/thyme-check-firmware 2>&1 || true
     echo
     echo "== artifacts =="
     ( cd "$OUT" && ls -lh *.tar.zst *.img.zst 2>/dev/null || true )
