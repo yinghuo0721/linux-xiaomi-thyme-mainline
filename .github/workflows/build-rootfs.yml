@@ -51,6 +51,10 @@ on:
         description: "可选: firmware_url 的 SHA256"
         type: string
         default: ""
+      fetch_armada_firmware:
+        description: "从 armada-sheng 仓库获取 thyme 原厂固件（推荐）"
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -105,6 +109,17 @@ jobs:
           ninja -C build/libcamera -j"$(nproc)"
           DESTDIR="$GITHUB_WORKSPACE/libcamera-stage" \
             meson install -C build/libcamera --no-rebuild
+
+      - name: Fetch thyme firmware from armada-sheng
+        if: ${{ inputs.fetch_armada_firmware && inputs.firmware_url == '' }}
+        run: |
+          git clone --depth 1 --filter=blob:none --sparse \
+            https://github.com/yuweiyuan8/armada-sheng.git "$RUNNER_TEMP/armada"
+          git -C "$RUNNER_TEMP/armada" sparse-checkout set \
+            system_files/usr/lib/firmware
+          test -d "$RUNNER_TEMP/armada/system_files/usr/lib/firmware"
+          echo "VENDOR_FIRMWARE_DIR=$RUNNER_TEMP/armada/system_files/usr" >> "$GITHUB_ENV"
+          echo "firmware files: $(find "$RUNNER_TEMP/armada/system_files/usr/lib/firmware" -type f | wc -l)"
 
       - name: Prepare optional vendor firmware
         run: |
