@@ -16,10 +16,9 @@ WIFI_SSID="${WIFI_SSID:-}"
 WIFI_PSK="${WIFI_PSK:-}"
 ROOT_PART="${ROOT_PART:-/dev/sda38}"
 case "$ROOT_PART" in
-    /dev/*) ;;
+    /dev/*|PARTLABEL=*) ;;
     *)
-        echo "ERROR: ROOT_PART must look like /dev/sdXN (got '$ROOT_PART')." >&2
-        echo "On Windows/Git Bash pass -f root_part='//dev/sda38' or set MSYS_NO_PATHCONV=1." >&2
+        echo "ERROR: ROOT_PART must be /dev/sdXN or PARTLABEL=<name> (got '$ROOT_PART')." >&2
         exit 1
         ;;
 esac
@@ -41,7 +40,7 @@ ln -sf /usr/share/zoneinfo/UTC "$ROOT/etc/localtime"
 printf 'UTC\n' > "$ROOT/etc/timezone"
 printf 'LANG=C.UTF-8\n' > "$ROOT/etc/default/locale"
 : > "$ROOT/etc/machine-id"
-printf '%s / ext4 defaults,noatime 0 1\n' "$ROOT_PART" > "$ROOT/etc/fstab"
+printf '%s / ext4 defaults,noatime,x-systemd.growfs 0 1\n' "$ROOT_PART" > "$ROOT/etc/fstab"
 
 echo "--> libcamera v0.7.0"
 if [ -n "$LIBCAMERA_STAGE" ]; then
