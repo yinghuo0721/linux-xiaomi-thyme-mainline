@@ -9,6 +9,7 @@
 #   ext4  - raw ext4 image for `fastboot flash userdata` (single-system)
 #   both  - both artifacts
 set -euo pipefail
+trap 'echo "ERROR: line $LINENO: $BASH_COMMAND" >&2' ERR
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/.." && pwd)"
@@ -190,6 +191,7 @@ if [ "$IMAGE_FORMAT" = "ext4" ] || [ "$IMAGE_FORMAT" = "both" ]; then
     ls -lh "$IMAGE_ZST"
 fi
 
+echo "==> write info and install notes"
 {
     echo "thyme rootfs build"
     echo "suite:        $SUITE"
@@ -272,6 +274,7 @@ libcamera 的 ABI 为 0.7 时，PipeWire/WirePlumber 的 LD_LIBRARY_PATH
 drop-in 会自动启用；否则放在同目录的 rootfs-config/ 中，需要自行评估。
 EOF
 
+echo "==> checksums and verification report"
 (
     cd "$OUT"
     find . -maxdepth 1 -type f \
@@ -279,6 +282,7 @@ EOF
         -printf '%f\0' | sort -z | xargs -0 sha256sum > SHA256SUMS
 )
 
+echo "==> verification report"
 {
     echo "== image =="
     echo "$NAME ($IMAGE_FORMAT)"
