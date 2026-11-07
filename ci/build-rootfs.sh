@@ -1,8 +1,13 @@
 #!/bin/bash
 # Build a bootable arm64 Ubuntu rootfs for Xiaomi Mi 10S (thyme).
 #
-# Requires: root, mmdebstrap, zstd, a native arm64 host (or qemu binfmt).
+# Requires: root, mmdebstrap, zstd, e2fsprogs, a native arm64 host (or qemu binfmt).
 # The libcamera v0.7.0 install tree must be staged via LIBCAMERA_STAGE.
+#
+# IMAGE_FORMAT:
+#   tar   - rootfs tarball for installing from an existing Linux
+#   ext4  - raw ext4 image for `fastboot flash userdata` (single-system)
+#   both  - both artifacts
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -20,6 +25,14 @@ WIFI_PSK="${WIFI_PSK:-}"
 ROOT_PART="${ROOT_PART:-/dev/sda38}"
 LIBCAMERA_STAGE="${LIBCAMERA_STAGE:-}"
 VENDOR_FIRMWARE_DIR="${VENDOR_FIRMWARE_DIR:-}"
+IMAGE_FORMAT="${IMAGE_FORMAT:-tar}"
+IMAGE_MB="${IMAGE_MB:-8192}"
+
+case "$IMAGE_FORMAT" in
+    tar|ext4|both) ;;
+    *) echo "ERROR: IMAGE_FORMAT must be tar, ext4 or both" >&2; exit 1 ;;
+esac
+
 if [ -n "$VENDOR_FIRMWARE_DIR" ]; then
     VENDOR_FIRMWARE_DIR="$(readlink -f "$VENDOR_FIRMWARE_DIR")"
     if [ ! -d "$VENDOR_FIRMWARE_DIR/lib/firmware" ]; then
@@ -130,15 +143,55 @@ PY
 TAG="$(date +%Y%m%d)"
 if [ "$DESKTOP" = "true" ]; then DESKTOP_SUFFIX="-desktop"; else DESKTOP_SUFFIX=""; fi
 NAME="thyme-rootfs-${SUITE}${DESKTOP_SUFFIX}-${TAG}"
-echo "==> pack $NAME.tar.zst"
-sudo tar --numeric-owner --xattrs --acls --zstd \
-    -C "$ROOTFS" -cf "$OUT/$NAME.tar.zst" .
-sudo chown "$(id -u):$(id -g)" "$OUT/$NAME.tar.zst"
+TARBALL="$OUT/$NAME.tar.zst"
+IMAGE="$OUT/$NAME.img"
+IMAGE_ZST="$IMAGE.zst"
+
+if [ "$IMAGE_FORMAT" != "ext4" ]; then
+    echo "==> pack $NAME.tar.zst"
+    sudo tar --numeric-owner --xattrs --acls --zstd \
+        -C "$ROOTFS" -cf "$TARBALL" .
+    sudo chown "$(id -u):$(id -g)" "$TARBALL"
+fi
+
+if [ "$IMAGE_FORMAT" = "ext4" ] || [ "$IMAGE_FORMAT" = "both" ]; then
+    echo "==> create ext4 image ${IMAGE_MB}M -> $NAME.img"
+    sudo rm -f "$IMAGE" "$IMAGE_ZST"
+    sudo truncate -s "${IMAGE_MB}M" "$IMAGE"
+    sudo mkfs.ext4 -F -L thyme "$IMAGE" >/dev/null
+    MNT="$(mktemp -d)"
+    if sudo mount -o loop "$IMAGE" "$MNT" 2>/dev/null; then
+        sudo tar --numeric-owner --xattrs --acls -C "$ROOTFS" -cf - . \
+            | sudo tar --numeric-owner --xattrs --acls -C "$MNT" -xf -
+        sudo umount "$MNT"
+    else
+        echo "    loop mount unavailable, falling back to mke2fs -d"
+        sudo rm -f "$IMAGE"
+        sudo truncate -s "${IMAGE_MB}M" "$IMAGE"
+        sudo mke2fs -F -t ext4 -L thyme -d "$ROOTFS" "$IMAGE" >/dev/null
+    fi
+    rmdir "$MNT" 2>/dev/null || true
+    sudo e2fsck -fy "$IMAGE" >/dev/null 2>&1 || true
+    if sudo resize2fs -M "$IMAGE" >/dev/null 2>&1; then
+        BLOCKS="$(sudo dumpe2fs -h "$IMAGE" 2>/dev/null \
+            | awk -F: '/Block count:/{gsub(/ /,"",$2); print $2}')"
+        BSIZE="$(sudo dumpe2fs -h "$IMAGE" 2>/dev/null \
+            | awk -F: '/Block size:/{gsub(/ /,"",$2); print $2}')"
+        if [ -n "$BLOCKS" ] && [ -n "$BSIZE" ]; then
+            sudo truncate -s "$((BLOCKS * BSIZE))" "$IMAGE"
+        fi
+    fi
+    sudo e2fsck -fn "$IMAGE" >/dev/null
+    echo "==> compress $(basename "$IMAGE")"
+    sudo zstd -T0 -10 -q --rm "$IMAGE" -o "$IMAGE_ZST"
+    sudo chown "$(id -u):$(id -g)" "$IMAGE_ZST"
+fi
 
 {
     echo "thyme rootfs build"
     echo "suite:        $SUITE"
     echo "mirror:       $MIRROR"
+    echo "format:       $IMAGE_FORMAT"
     echo "desktop:      $DESKTOP"
     echo "hostname:     $THYME_HOSTNAME"
     echo "user:         $THYME_USER"
@@ -158,19 +211,38 @@ cat > "$OUT/INSTALL.zh-CN.txt" <<EOF
 thyme rootfs 安装说明
 =====================
 
-镜像包: $NAME.tar.zst
+构建: $NAME
+格式: $IMAGE_FORMAT
+根分区: $ROOT_PART
 
 前提
 ----
-- boot 镜像的 cmdline 必须包含 root=$ROOT_PART（上游模板默认为 /dev/sda38）。
+- boot 镜像的 cmdline 必须与根分区一致。单系统刷 userdata 时使用
+  root=PARTLABEL=userdata rw rootwait（kernel 产物里的 thyme-userdata.img）。
 - 内核已内置 UFS/SCSI/ext4，不需要 initramfs。
-- 写入操作会清空目标分区，请先确认分区号并备份。
+- 写入/刷写会清空目标分区（userdata 会清空 Android 数据），请先备份。
 
-写入分区
---------
-  sudo mkfs.ext4 $ROOT_PART
+方式 A: fastboot 刷 ext4 镜像（手机上还没有 Linux 时用这个）
+------------------------------------------------------------
+  # 用 7-Zip 或 zstd 解开 .img.zst
+  7z e $NAME.img.zst
+  # 或: zstd -d $NAME.img.zst
+
+  fastboot flash boot_a thyme-userdata.img
+  fastboot flash boot_b thyme-userdata.img
+  fastboot erase userdata
+  fastboot flash userdata $NAME.img
+  fastboot reboot
+
+首次启动会自动把 ext4 扩到 userdata 分区大小（fstab 的 x-systemd.growfs），
+可能需要几分钟。Android 数据会被清空。
+
+方式 B: 从已有的 Linux 写入分区（仅当格式为 tar/both）
+-----------------------------------------------
+  sudo mkfs.ext4 -L thyme $ROOT_PART
   sudo mount $ROOT_PART /mnt
   sudo tar --zstd --numeric-owner -xpf $NAME.tar.zst -C /mnt
+  sudo cp -a stock-firmware/out/lib/firmware/. /mnt/lib/firmware/
   sudo umount /mnt
 
 首次启动
@@ -178,7 +250,7 @@ thyme rootfs 安装说明
 - 用户: $THYME_USER  密码: 见构建输入（默认 thyme，请立即修改）
 - SSH: ssh $THYME_USER@<手机 IP>（需要已配置 Wi-Fi 或有线网络）
 - 串口: ttyMSM0 已启用 getty
-- 桌面: $([ "$DESKTOP" = "true" ] && echo "已安装 ubuntu-desktop-minimal" || echo "未安装，仅控制台/SSH")
+- 桌面: $([ "$DESKTOP" = "true" ] && echo "已安装 ubuntu-desktop-minimal，GDM 自动登录 $THYME_USER" || echo "未安装，仅控制台/SSH")
 
 固件
 ----
@@ -197,8 +269,46 @@ libcamera 的 ABI 为 0.7 时，PipeWire/WirePlumber 的 LD_LIBRARY_PATH
 drop-in 会自动启用；否则放在同目录的 rootfs-config/ 中，需要自行评估。
 EOF
 
-(cd "$OUT" && sha256sum "$NAME.tar.zst" manifest.txt > SHA256SUMS)
+(
+    cd "$OUT"
+    find . -maxdepth 1 -type f \
+        \( -name '*.tar.zst' -o -name '*.img.zst' -o -name 'manifest.txt' \) \
+        -printf '%f\0' | sort -z | xargs -0 sha256sum > SHA256SUMS
+)
+
+{
+    echo "== image =="
+    echo "$NAME ($IMAGE_FORMAT)"
+    echo
+    echo "== fstab =="
+    cat "$ROOTFS/etc/fstab"
+    echo
+    echo "== hostname =="
+    cat "$ROOTFS/etc/hostname"
+    echo
+    echo "== gdm =="
+    cat "$ROOTFS/etc/gdm3/custom.conf" 2>/dev/null || echo "(no gdm3, minimal image)"
+    ls -l "$ROOTFS/etc/systemd/system/display-manager.service" 2>/dev/null || true
+    echo
+    echo "== key packages =="
+    grep -E '^(ubuntu-desktop-minimal|gnome-shell|gdm3|gnome-tweaks|pipewire|wireplumber|libcamera-tools|linux-firmware)[[:space:]]' \
+        "$OUT/manifest.txt" || true
+    echo
+    echo "== user configs =="
+    find "$ROOTFS/home/$THYME_USER/.config" -maxdepth 4 \( -type f -o -type l \) \
+        2>/dev/null | sed "s|$ROOTFS||" | sort
+    echo
+    echo "== libcamera =="
+    ls -l "$ROOTFS/opt/thyme-camera-focus-color/lib/libcamera.so.0.7.0" 2>/dev/null || true
+    echo
+    echo "== firmware check =="
+    chroot "$ROOTFS" /usr/local/sbin/thyme-check-firmware 2>&1 || true
+    echo
+    echo "== artifacts =="
+    ( cd "$OUT" && ls -lh *.tar.zst *.img.zst 2>/dev/null || true )
+    sha256sum "$OUT"/*.tar.zst "$OUT"/*.img.zst 2>/dev/null || true
+} > "$OUT/verify-report.txt"
 
 echo "==> done"
-ls -lh "$OUT/$NAME.tar.zst"
+ls -lh "$OUT"/*.tar.zst "$OUT"/*.img.zst 2>/dev/null || true
 cat "$OUT/SHA256SUMS"
