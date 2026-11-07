@@ -35,9 +35,14 @@ on:
         type: string
         default: ""
       root_part:
-        description: "根分区设备（必须与 boot 镜像 cmdline 的 root= 一致）"
+        description: "根分区: /dev/sda38, 或单系统刷 userdata 时用 PARTLABEL=userdata"
         type: string
         default: /dev/sda38
+      image_format:
+        description: "产物格式: tar=从已有 Linux 解包, ext4=fastboot 刷 userdata"
+        type: choice
+        options: [tar, ext4, both]
+        default: tar
       firmware_url:
         description: "可选: 含 lib/firmware 的 tar.zst/tar.gz/zip 直链（原厂 blobs，勿放公开链接）"
         type: string
@@ -69,6 +74,7 @@ jobs:
       WIFI_SSID: ${{ inputs.wifi_ssid }}
       WIFI_PSK: ${{ inputs.wifi_psk }}
       ROOT_PART: ${{ inputs.root_part }}
+      IMAGE_FORMAT: ${{ inputs.image_format }}
       FIRMWARE_URL: ${{ inputs.firmware_url }}
       FIRMWARE_SHA256: ${{ inputs.firmware_sha256 }}
       LIBCAMERA_STAGE: ${{ github.workspace }}/libcamera-stage
@@ -158,7 +164,15 @@ jobs:
       - name: Upload rootfs artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: thyme-rootfs-${{ inputs.suite }}-${{ inputs.desktop && 'desktop' || 'minimal' }}
+          name: thyme-rootfs-${{ inputs.suite }}-${{ inputs.desktop && 'desktop' || 'minimal' }}-${{ inputs.image_format }}
           path: out-rootfs/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload verification report
+        uses: actions/upload-artifact@v4
+        with:
+          name: thyme-rootfs-verify-${{ inputs.suite }}-${{ inputs.desktop && 'desktop' || 'minimal' }}-${{ inputs.image_format }}
+          path: out-rootfs/verify-report.txt
           if-no-files-found: error
           retention-days: 30
