@@ -128,7 +128,8 @@ print(f"manifest: {len(rows)} packages")
 PY
 
 TAG="$(date +%Y%m%d)"
-NAME="thyme-rootfs-${SUITE}$([ "$DESKTOP" = "true" ] && echo -desktop)-${TAG}"
+if [ "$DESKTOP" = "true" ]; then DESKTOP_SUFFIX="-desktop"; else DESKTOP_SUFFIX=""; fi
+NAME="thyme-rootfs-${SUITE}${DESKTOP_SUFFIX}-${TAG}"
 echo "==> pack $NAME.tar.zst"
 sudo tar --numeric-owner --xattrs --acls --zstd \
     -C "$ROOTFS" -cf "$OUT/$NAME.tar.zst" .
