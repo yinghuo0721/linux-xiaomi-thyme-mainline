@@ -46,7 +46,7 @@ def main():
         output = boot / f"thyme-camera-{variant}{suffix}.img"
         result = subprocess.run(
             [sys.executable, str(ROOT / "tools/pack-bootimg.py"),
-             str(BUILD / "Image.gz"), str(dtb_path), str(output), cmdline],
+             str(build / "Image.gz"), str(dtb_path), str(output), cmdline],
             check=True, capture_output=True, text=True,
         )
         data = output.read_bytes()

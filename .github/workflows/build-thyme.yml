@@ -1,0 +1,151 @@
+name: Build thyme (Mi 10S) images
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_userspace:
+        description: "同时构建 arm64 libcamera 用户态"
+        type: boolean
+        default: true
+  push:
+    branches: [ master ]
+    paths:
+      - '.github/workflows/build-thyme.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: thyme-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  kernel:
+    name: Kernel / DTBs / boot images
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      ARCH: arm64
+      CROSS_COMPILE: aarch64-linux-gnu-
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
+            bc bison flex libssl-dev libelf-dev device-tree-compiler \
+            python3 xz-utils zstd
+          aarch64-linux-gnu-gcc --version | head -1
+
+      - name: Configure kernel
+        run: |
+          BUILD="$RUNNER_TEMP/kernel-build"
+          mkdir -p "$BUILD"
+          cp thyme-camera/config/kernel-build.config "$BUILD/.config"
+          make O="$BUILD" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" olddefconfig
+          echo "KERNELVERSION=$(make -s O="$BUILD" kernelversion)" >> "$GITHUB_ENV"
+
+      - name: Build Image.gz and device trees
+        run: |
+          make O="$RUNNER_TEMP/kernel-build" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" \
+            -j"$(nproc)" \
+            Image.gz \
+            qcom/sm8250-xiaomi-thyme.dtb \
+            qcom/sm8250-xiaomi-thyme-logdump.dtb
+
+      - name: Pack Android boot images
+        run: |
+          python3 thyme-camera/tools/pack-images.py \
+            --build-dir "$RUNNER_TEMP/kernel-build" \
+            --output-dir "$GITHUB_WORKSPACE/out"
+
+      - name: Collect raw outputs
+        run: |
+          mkdir -p out/raw out/dts
+          cp "$RUNNER_TEMP/kernel-build/arch/arm64/boot/Image" out/raw/
+          cp "$RUNNER_TEMP/kernel-build/arch/arm64/boot/Image.gz" out/raw/
+          cp "$RUNNER_TEMP/kernel-build/arch/arm64/boot/dts/qcom/sm8250-xiaomi-thyme.dtb" out/dts/
+          cp "$RUNNER_TEMP/kernel-build/arch/arm64/boot/dts/qcom/sm8250-xiaomi-thyme-logdump.dtb" out/dts/
+          cp "$RUNNER_TEMP/kernel-build/.config" out/raw/kernel.config
+          (cd out && find . -type f ! -name 'SHA256SUMS-all.txt' -print0 \
+            | sort -z | xargs -0 sha256sum > SHA256SUMS-all.txt)
+          cat out/SHA256SUMS-camera
+          {
+            echo "### thyme kernel: ${KERNELVERSION}"
+            echo ""
+            echo '```'
+            cat out/SHA256SUMS-camera
+            echo ""
+            ls -l out/raw out/dts
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload kernel artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: thyme-kernel-${{ env.KERNELVERSION }}
+          path: out/
+          if-no-files-found: error
+          retention-days: 30
+
+  userspace:
+    name: libcamera v0.7.0 (arm64)
+    needs: kernel
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.build_userspace }}
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential meson ninja-build pkg-config libudev-dev libyaml-dev \
+            libssl-dev libevent-dev libdrm-dev \
+            python3-jinja2 python3-ply python3-yaml
+
+      - name: Configure libcamera
+        run: |
+          meson setup build/libcamera thyme-camera/userspace/thyme-libcamera-v070 \
+            --prefix=/opt/thyme-camera-focus-color --libdir=lib \
+            --buildtype=debugoptimized \
+            -Dpipelines=simple -Dipas=simple -Dcam=disabled -Dqcam=disabled \
+            -Dgstreamer=disabled -Dpycamera=disabled -Ddocumentation=disabled \
+            -Dlc-compliance=disabled -Dv4l2=disabled -Dtest=false \
+            -Dtracing=disabled -Dlibunwind=disabled
+
+      - name: Build libcamera
+        run: ninja -C build/libcamera -j"$(nproc)"
+
+      - name: Stage install
+        run: |
+          DESTDIR="$PWD/stage" meson install -C build/libcamera --no-rebuild
+          tar -C stage -czf thyme-libcamera-v070-arm64.tar.gz .
+          sha256sum thyme-libcamera-v070-arm64.tar.gz > thyme-libcamera-v070-arm64.tar.gz.sha256
+          {
+            echo "### thyme libcamera v0.7.0 (arm64)"
+            echo ""
+            echo '```'
+            cat thyme-libcamera-v070-arm64.tar.gz.sha256
+            find stage -type f | head -20
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload userspace artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: thyme-libcamera-v070-arm64
+          path: |
+            thyme-libcamera-v070-arm64.tar.gz
+            thyme-libcamera-v070-arm64.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 30
