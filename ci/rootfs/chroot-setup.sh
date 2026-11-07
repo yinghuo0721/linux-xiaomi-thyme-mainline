@@ -153,6 +153,18 @@ chroot "$ROOT" systemctl enable \
 chroot "$ROOT" systemctl enable serial-getty@ttyMSM0.service >/dev/null 2>&1 || true
 chroot "$ROOT" systemctl mask systemd-firstboot.service >/dev/null 2>&1 || true
 if [ "$THYME_DESKTOP" = "true" ]; then
+    install -d "$ROOT/etc/gdm3"
+    cat > "$ROOT/etc/gdm3/custom.conf" <<EOF
+[daemon]
+AutomaticLoginEnable=true
+AutomaticLogin=$THYME_USER
+EOF
+    chroot "$ROOT" systemctl enable gdm3.service >/dev/null 2>&1 || true
+    # Skip the GNOME first-login wizard on a device without a keyboard.
+    install -m644 -o "$UID_T" -g "$GID_T" /dev/null \
+        "$HOME_T/.config/gnome-initial-setup-done"
+    chroot "$ROOT" systemctl --global mask \
+        gnome-initial-setup-first-login.service >/dev/null 2>&1 || true
     chroot "$ROOT" systemctl set-default graphical.target >/dev/null
 else
     chroot "$ROOT" systemctl set-default multi-user.target >/dev/null
