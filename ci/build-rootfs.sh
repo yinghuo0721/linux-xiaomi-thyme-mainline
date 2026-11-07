@@ -26,7 +26,7 @@ ROOT_PART="${ROOT_PART:-/dev/sda38}"
 LIBCAMERA_STAGE="${LIBCAMERA_STAGE:-}"
 VENDOR_FIRMWARE_DIR="${VENDOR_FIRMWARE_DIR:-}"
 IMAGE_FORMAT="${IMAGE_FORMAT:-tar}"
-IMAGE_MB="${IMAGE_MB:-8192}"
+IMAGE_MB="${IMAGE_MB:-6144}"
 
 case "$IMAGE_FORMAT" in
     tar|ext4|both) ;;
@@ -183,8 +183,11 @@ if [ "$IMAGE_FORMAT" = "ext4" ] || [ "$IMAGE_FORMAT" = "both" ]; then
     fi
     sudo e2fsck -fn "$IMAGE" >/dev/null
     echo "==> compress $(basename "$IMAGE")"
-    sudo zstd -T0 -10 -q --rm "$IMAGE" -o "$IMAGE_ZST"
+    df -h "$OUT" || true
+    sudo zstd -T0 -10 -f "$IMAGE" -o "$IMAGE_ZST"
+    sudo rm -f "$IMAGE"
     sudo chown "$(id -u):$(id -g)" "$IMAGE_ZST"
+    ls -lh "$IMAGE_ZST"
 fi
 
 {
