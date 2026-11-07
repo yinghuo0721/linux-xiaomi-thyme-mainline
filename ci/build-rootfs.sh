@@ -101,15 +101,31 @@ sudo chroot "$ROOTFS" /bin/bash -c \
 
 mkdir -p "$OUT"
 echo "==> package manifest"
-if ! sudo chroot "$ROOTFS" dpkg-query -W -f='${Package}\t${Version}\n' \
-        > "$OUT/manifest.txt"; then
-    echo "warning: dpkg-query failed; falling back to /var/lib/dpkg/status"
-    sudo chroot "$ROOTFS" /bin/sh -c \
-        'dpkg-query --version; ls -l /var/lib/dpkg/status; wc -l /var/lib/dpkg/status' || true
-    sudo awk '/^Package:/{p=$2} /^Version:/{print p"\t"$2}' \
-        "$ROOTFS/var/lib/dpkg/status" | sort > "$OUT/manifest.txt"
-fi
-sort -o "$OUT/manifest.txt" "$OUT/manifest.txt"
+# dpkg-query inside the chroot exits non-zero on this image even though the
+# database is intact, so parse /var/lib/dpkg/status from the host instead.
+sudo chroot "$ROOTFS" dpkg-query -W -f='${Package}\n' >/dev/null 2>&1 \
+    || echo "note: chroot dpkg-query returned $?; using status file"
+python3 - "$ROOTFS/var/lib/dpkg/status" "$OUT/manifest.txt" <<'PY'
+import sys
+
+src, dst = sys.argv[1], sys.argv[2]
+pkg = ver = None
+rows = []
+with open(src, encoding="utf-8", errors="replace") as f:
+    for line in f:
+        if line.startswith("Package: "):
+            pkg = line.split(": ", 1)[1].strip()
+        elif line.startswith("Version: "):
+            ver = line.split(": ", 1)[1].strip()
+        elif not line.strip() and pkg and ver:
+            rows.append(f"{pkg}\t{ver}")
+            pkg = ver = None
+if pkg and ver:
+    rows.append(f"{pkg}\t{ver}")
+with open(dst, "w", encoding="utf-8") as f:
+    f.write("\n".join(sorted(rows)) + "\n")
+print(f"manifest: {len(rows)} packages")
+PY
 
 TAG="$(date +%Y%m%d)"
 NAME="thyme-rootfs-${SUITE}$([ "$DESKTOP" = "true" ] && echo -desktop)-${TAG}"
