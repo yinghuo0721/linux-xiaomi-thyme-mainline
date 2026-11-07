@@ -101,7 +101,15 @@ sudo chroot "$ROOTFS" /bin/bash -c \
 
 mkdir -p "$OUT"
 echo "==> package manifest"
-sudo chroot "$ROOTFS" dpkg-query -W -f='${Package}\t${Version}\n' | sort > "$OUT/manifest.txt"
+if ! sudo chroot "$ROOTFS" dpkg-query -W -f='${Package}\t${Version}\n' \
+        > "$OUT/manifest.txt"; then
+    echo "warning: dpkg-query failed; falling back to /var/lib/dpkg/status"
+    sudo chroot "$ROOTFS" /bin/sh -c \
+        'dpkg-query --version; ls -l /var/lib/dpkg/status; wc -l /var/lib/dpkg/status' || true
+    sudo awk '/^Package:/{p=$2} /^Version:/{print p"\t"$2}' \
+        "$ROOTFS/var/lib/dpkg/status" | sort > "$OUT/manifest.txt"
+fi
+sort -o "$OUT/manifest.txt" "$OUT/manifest.txt"
 
 TAG="$(date +%Y%m%d)"
 NAME="thyme-rootfs-${SUITE}$([ "$DESKTOP" = "true" ] && echo -desktop)-${TAG}"
